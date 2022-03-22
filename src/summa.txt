@@ -1,0 +1,119 @@
+#include <Arduino.h>
+#include "test.h"
+// pins for waterReading
+#define pinD5 14
+#define pinD6 12
+#define pinD7 13
+
+#define relayPin 5   //relay Pin, Motor Pin
+#define buzzerPin 16 //Buzzer pin
+bool ledState = LOW;
+
+bool dryPin;  //Dry run Pin 
+bool tnkUPin; //Tank Upper Pin  
+bool tnkLPin; //Tank Lower Pin
+
+void ReadPin();
+void TurnRelay();
+void DryRun();
+void BlinkBuzz();
+//func proto
+unsigned long prevBLmillis = 0;
+unsigned long prevBLmillis1 = 0;
+
+void setup(){
+
+  Serial.begin(115200);
+  pinMode(pinD5, INPUT_PULLUP);  // using internal pullResistor of esp to measure DigitaRead without floating
+  pinMode(pinD6, INPUT_PULLUP);
+  pinMode(pinD7, INPUT_PULLUP);
+
+  pinMode(relayPin, OUTPUT);
+  pinMode(buzzerPin, OUTPUT);
+  begin();
+}
+
+void loop(){
+  ReadPin();
+  TurnRelay();
+  DryRun();
+  loop1();
+ delay(1000);
+}
+
+void ReadPin(){
+  dryPin = digitalRead(pinD5);
+  tnkUPin = digitalRead(pinD6);
+  tnkLPin = digitalRead(pinD7);
+
+  // Serial.println(dryPin);
+  // Serial.println(tnkUPin);
+  // Serial.println(tnkLPin);
+  // Serial.println("");
+}
+ // if water availble = 0 , else : = 1
+void TurnRelay(){
+  if(dryPin){   // valPin returns true if water aint available ; i.e : pin = 1
+    Serial.println("D5 Tank is LOW\n");
+  }else if(!dryPin)
+  Serial.println(dryPin);
+
+  if(tnkUPin){   // valPin returns true if water aint available ; i.e : pin = 1
+    Serial.println("D6 Tank is LOW\n");
+  }else if(!tnkUPin)
+  Serial.println(tnkUPin);
+
+    if(tnkLPin){   // valPin returns true if water aint available ; i.e : pin = 1
+    Serial.println("D7 Tank is LOW\n");
+  }else if(!tnkLPin)
+  Serial.println(tnkLPin);
+
+//Turing Relay on
+    if (!tnkUPin && !tnkLPin){
+      digitalWrite(relayPin, LOW);
+      Serial.println("Turning Relay OFF..");
+    }
+
+    if(tnkLPin){
+      digitalWrite(relayPin, HIGH);
+      Serial.println("Turning ON Relay..");
+    }
+
+}
+
+void DryRun(){
+  if ( digitalRead(relayPin) == HIGH && dryPin == 1){
+    unsigned long timeout = millis();
+
+    while ((millis() - timeout) < 10000) Serial.println("loop");
+      while (dryPin == 1){
+         digitalWrite(relayPin, LOW);
+         BlinkBuzz();
+         Serial.println("END");
+         if (digitalRead(pinD5) != 1) {  // breaking the loop if no dry run is detected
+          while ((millis() - timeout) < 5000) Serial.println("loop");
+          if (digitalRead(pinD5) != 1) {
+            digitalWrite(buzzerPin, LOW);
+            break; 
+          }
+          }
+      }
+  }
+}
+
+void BlinkBuzz(){
+    if (millis() -  prevBLmillis1 >= 1000){
+   
+   // (ledState == LOW) ? ledState = HIGH : ledState = LOW; //inverting the buzzer to sound in a period
+    prevBLmillis1 = millis();
+    digitalWrite(buzzerPin, LOW);
+  }
+
+  if (millis() -  prevBLmillis >= 10000){
+   
+   // (ledState == LOW) ? ledState = HIGH : ledState = LOW; //inverting the buzzer to sound in a period
+    prevBLmillis = millis();
+    digitalWrite(buzzerPin, HIGH);
+  }
+
+}

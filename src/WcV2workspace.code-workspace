@@ -1,0 +1,14 @@
+{
+	"folders": [
+		{
+			"name": "IoTWaterController-v2",
+			"path": ".."
+		}
+	],
+	"settings": {
+		"files.associations": {
+			"*.tcc": "cpp",
+			"regex": "cpp"
+		}
+	}
+}
