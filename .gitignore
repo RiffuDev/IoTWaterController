@@ -5,17 +5,5 @@
 .vscode/ipch
 include
 lib
-src/2main.txt
-src/FASTLedIII.txt
-src/FOTA.h
-src/motorIndex.h
-src/OTA.h
-src/summa.html
-src/summa.txt
-src/temp.txt
-src/test.h
-src/test1.h
-src/therl.txt
-src/WcV2workspace.code-workspace
-src/wifi manager.txt
+src/summaTemp
 test
