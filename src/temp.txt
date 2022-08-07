@@ -1,0 +1,1020 @@
+#ifdef ESP32
+#include<ESPmDNS.h>
+#include<WiFi.h>
+#include <AsyncTCP.h>
+#include <Update.h>
+#elif defined(ESP8266)
+#include <ESP8266WiFi.h>
+#include <ESPAsyncTCP.h>
+#include <ESP8266mDNS.h>
+#endif
+#include "Arduino.h"
+#include <NTPClient.h>
+#include <WiFiUdp.h>
+#include <ESPAsyncWebServer.h>
+#include <ESPAsyncWiFiManager.h>
+#include "HTTPClient.h"
+#include <Filters.h>
+#include <FastLED.h>
+#include "FS.h"
+#include <LITTLEFS.h>
+#include <AsyncElegantOTA.h>
+
+//#define FORMAT_LITTLEFS_IF_FAILED true  // using this if we didnt initialized any files using uploader
+
+#define uS_TO_S_FACTOR 1000000ULL  /* Conversion factor for micro seconds to seconds */
+#define TIME_TO_SLEEP  600        /* Time ESP32 will go to sleep (in seconds) */
+
+RTC_DATA_ATTR int bootCount = 0;  // creating a temp variable in RTC memory because on deep sleep mode every peripherals will be turned off..
+
+
+//const char* host = "evt-0001";
+String Hostname;
+float intervalKwh;
+unsigned long interval;     // the time we need to wait
+unsigned long timenow1 = 0;
+unsigned long timenow2 = 0;
+int interval1 = 8000;
+int interval2 = 6000;
+String watts = "0";
+float kwh;
+float lastKwh = 0;  // lastKwh;
+unsigned long previousMillis = 0; // millis() returns an unsigned long.
+unsigned long RemTime = 0;
+//String Amp, ACV, DCV, i2cstr;
+// Floats for ADC voltage & Input voltage
+
+#define ACS_Pin 36                        //Sensor data pin on A0 analog input
+int ACS_Value;                              //Here we keep the raw data valuess
+float testFrequency = 50;                    // test signal frequency (Hz)
+float windowLength = 40.0 / testFrequency;   // how long to average the signal, for statistist
+
+float CSintercept = 0.0250; // to be adjusted based on calibration testing
+float CSslope = 0.0062; // 0.0752; to be adjusted based on calibration testing
+//Please check the ACS712 Tutorial video by SurtrTech to see how to get them because it depends on your sensor, or look below
+
+float Amps_TRMS; // estimated actual current in amps
+
+#define ACAnalog_channel_pin 34
+int AC_value = 0;
+float ACVoltage_value = 0;
+
+#define DCAnalog_channel_pin 35
+float DC_Value = 0;
+float DCVoltage_value = 0;
+
+#define TempAnalog_channel_pin 39
+float Temp_Value = 0;
+float temp = 0;
+
+static int taskCore = 0;
+
+#ifdef ESP32
+#define RelayPin 2
+#define BuzzerPin 19
+#define LED_PIN 18
+#define NUM_LEDS 1
+#define TRIGGER_PIN 25
+
+#elif defined(ESP8266)
+#define RelayPin 0 //D3
+//#define BuzzerPin 13
+//#define LED_PIN 0
+//#define NUM_LEDS 1
+#define TRIGGER_PIN 2 //D4
+#endif
+
+//const char* serverIndex = "<form method='POST' action='/update' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Update'></form>";
+//const char* serverIndex = "<form method='POST' action='/update' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Update'></form>";
+//const uint8_t AzxImage[] PROGMEM = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0xaa, 0xaa, 0x00, 0x08, 0x00, 0x00, 0x00, 0x82, 0xa2, 0x00, 0x50, 0x00, 0x00, 0x00, 0x04, 0xc0, 0xff, 0xff, 0x01, 0xff, 0x00, 0x01, 0x00, 0x8f, 0xe3, 0x01, 0x78, 0x00, 0x00, 0x00, 0x06, 0xc0, 0xff, 0xff, 0xc1, 0xff, 0x03, 0x03, 0x00, 0x8f, 0xc3, 0x07, 0x7c, 0x00, 0x00, 0x00, 0x0e, 0xc0, 0xff, 0xff, 0xf0, 0xff, 0x07, 0x0f, 0x00, 0xcf, 0xc3, 0x07, 0x3e, 0x00, 0x00, 0x00, 0x0f, 0x00, 0xa5, 0x7e, 0xf0, 0xd7, 0x0f, 0x1f, 0x00, 0x8f, 0x83, 0x0f, 0x1e, 0x00, 0x00, 0x00, 0x1f, 0x00, 0x00, 0x3e, 0xf8, 0x00, 0x8f, 0x3f, 0x00, 0xcf, 0x03, 0x1f, 0x1f, 0x00, 0x00, 0x80, 0x1f, 0x00, 0x00, 0x3e, 0x78, 0x00, 0x1f, 0xff, 0x00, 0x8f, 0x03, 0x9e, 0x0f, 0x00, 0x00, 0xc0, 0x3f, 0x00, 0x00, 0x0f, 0x3c, 0x00, 0x9e, 0xff, 0x01, 0xcf, 0x03, 0xfe, 0x07, 0x00, 0x00, 0xc0, 0x3f, 0x00, 0x80, 0x0f, 0x3c, 0x00, 0x3c, 0xff, 0x03, 0x8f, 0x03, 0xfc, 0x03, 0x00, 0x00, 0xc0, 0x7f, 0x00, 0x80, 0x07, 0x1c, 0x00, 0x9c, 0xe7, 0x07, 0xcf, 0x03, 0xf8, 0x01, 0x00, 0x00, 0xe0, 0x79, 0x00, 0xc0, 0x07, 0x3c, 0x00, 0x3c, 0x8f, 0x1f, 0x8f, 0x03, 0xf0, 0x01, 0x00, 0x00, 0xf0, 0xf1, 0x00, 0xe0, 0x01, 0x1e, 0x00, 0x9c, 0x07, 0x3f, 0xcf, 0x03, 0xf8, 0x01, 0x00, 0x00, 0xf0, 0xf0, 0x00, 0xf0, 0x01, 0x3c, 0x00, 0x3c, 0x0f, 0x7e, 0xcf, 0x03, 0xfc, 0x03, 0x00, 0x00, 0xf0, 0xe0, 0x01, 0xf8, 0x00, 0x3c, 0x00, 0x9e, 0x07, 0xfc, 0xcf, 0x03, 0xfc, 0x07, 0x00, 0x00, 0x78, 0xe0, 0x01, 0xf8, 0x00, 0x78, 0x00, 0x1e, 0x0f, 0xf0, 0x8f, 0x03, 0xfe, 0x0f, 0x00, 0x00, 0x7c, 0xc0, 0x03, 0x3c, 0x00, 0xf8, 0x80, 0x0f, 0x07, 0xe0, 0xcf, 0x03, 0x1f, 0x0f, 0x00, 0x00, 0x3c, 0xc0, 0x03, 0x3e, 0x00, 0xf0, 0xc1, 0x0f, 0x0f, 0xc0, 0x8f, 0x83, 0x0f, 0x1f, 0x00, 0x00, 0x3c, 0x80, 0x07, 0xff, 0xff, 0xf3, 0xff, 0x87, 0x07, 0x80, 0xcf, 0x83, 0x07, 0x3e, 0x00, 0x00, 0x1e, 0x80, 0x07, 0xff, 0xff, 0xc3, 0xff, 0x03, 0x0f, 0x00, 0x8e, 0xc3, 0x07, 0x7c, 0x00, 0x00, 0x1f, 0x00, 0x8f, 0xff, 0xff, 0x83, 0xff, 0x80, 0x07, 0x00, 0xc8, 0xe3, 0x03, 0x78, 0x00, 0x00, 0x06, 0x00, 0xcb, 0xff, 0xff, 0x03, 0x3e, 0x00, 0x05, 0x00, 0x80, 0xe3, 0x00, 0xd0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x4b, 0xb2, 0x34, 0x4d, 0x1a, 0x88, 0xd1, 0x00, 0x00, 0x88, 0x80, 0x60, 0x41, 0x01, 0x00, 0x80, 0x40, 0x81, 0x00, 0x41, 0x81, 0x28, 0x08, 0x40, 0xa3, 0x48, 0x92, 0x44, 0x28, 0x99, 0x00, 0x80, 0x87, 0x78, 0x1e, 0x4f, 0x4f, 0x29, 0x70, 0x40, 0xa4, 0x29, 0x52, 0x06, 0x20, 0xaa, 0x00, 0x00, 0x80, 0x01, 0x00, 0x49, 0x40, 0x2c, 0x00, 0x40, 0x19, 0x2c, 0x62, 0x48, 0x24, 0xca, 0x00, 0x80, 0x44, 0x12, 0x24, 0x49, 0x89, 0x48, 0x92, 0x40, 0xa1, 0x48, 0x01, 0x81, 0x48, 0x89, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 };
+//const uint8_t BlkImage[] PROGMEM = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,0xFF, 0xFF, 0xFF, 0xFF, };
+//const uint8_t EvtImage[] PROGMEM = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0f, 0x07, 0x00, 0x8c, 0xff, 0x9f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0f, 0x07, 0x00, 0x88, 0xff, 0x0f, 0xef, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0f, 0x03, 0x00, 0x0c, 0xff, 0x8f, 0xc7, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0f, 0xc7, 0xff, 0x1f, 0xff, 0x87, 0xc7, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0f, 0xc3, 0xff, 0x1f, 0xff, 0xc7, 0xc7, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0f, 0xc7, 0xff, 0x1f, 0xfe, 0xc7, 0xc7, 0xff, 0xff, 0x3f, 0xf0, 0xff, 0xff, 0x0f, 0xc3, 0xff, 0x3f, 0xfe, 0xc3, 0xc7, 0x3f, 0x87, 0x0f, 0xc0, 0xdf, 0xc1, 0x0f, 0xc7, 0xff, 0x3f, 0xfc, 0xe3, 0x01, 0x3c, 0x00, 0x06, 0x80, 0x07, 0x80, 0x0f, 0xc3, 0xff, 0x7f, 0xfc, 0xe1, 0x00, 0x1c, 0x00, 0x02, 0x01, 0x07, 0x00, 0x0e, 0x07, 0xc0, 0x7f, 0xf8, 0xf1, 0x01, 0x3e, 0xf8, 0x21, 0x10, 0x06, 0x0e, 0x0e, 0x03, 0x80, 0xff, 0xf8, 0xf0, 0xc7, 0x1f, 0xfe, 0x31, 0x10, 0x86, 0x3f, 0x0c, 0x07, 0x80, 0xff, 0xf8, 0xf8, 0xc7, 0x3f, 0xfe, 0x10, 0x20, 0x84, 0x3f, 0x0c, 0xc3, 0xef, 0xff, 0xf0, 0xf8, 0xc7, 0x1f, 0xfe, 0x18, 0x60, 0x84, 0x7f, 0x0c, 0xc7, 0xff, 0xff, 0x71, 0xfc, 0xc7, 0x1f, 0xfe, 0x18, 0x60, 0xc4, 0x7f, 0x0c, 0xc3, 0xff, 0xff, 0x61, 0xfc, 0xc7, 0x3f, 0xfe, 0x18, 0x60, 0x84, 0x7f, 0x0c, 0xc7, 0xff, 0xff, 0x23, 0xfc, 0xc7, 0x1f, 0xfe, 0x10, 0x20, 0x84, 0x7f, 0x0c, 0xc3, 0xff, 0xff, 0x23, 0xfe, 0xc7, 0x3f, 0xfe, 0x30, 0x30, 0x86, 0x7f, 0x0c, 0xc7, 0xff, 0xff, 0x07, 0xfe, 0x87, 0x1f, 0xfe, 0x71, 0x18, 0xc6, 0x7f, 0x0c, 0xc3, 0xff, 0xff, 0x07, 0xff, 0x07, 0x3f, 0xfe, 0xc1, 0x08, 0x86, 0x7f, 0x0c, 0x07, 0x00, 0xfc, 0x0f, 0xff, 0x0f, 0x1c, 0xfe, 0x03, 0x00, 0x87, 0x7f, 0x0c, 0x03, 0x00, 0xf8, 0x8f, 0xff, 0x1f, 0x38, 0xfe, 0x07, 0x80, 0x87, 0x7f, 0x0c, 0x07, 0x00, 0xfc, 0x8f, 0xff, 0x3f, 0x3c, 0xff, 0x0f, 0xe1, 0xcf, 0x7f, 0x0e, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0f, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0f, 0x87, 0xfc, 0xff, 0xf7, 0xff, 0xc1, 0xdf, 0xff, 0x3f, 0xf0, 0xff, 0xff, 0x0f, 0x37, 0xfc, 0xff, 0xf7, 0xff, 0x9d, 0xdf, 0xff, 0x9f, 0xff, 0xff, 0xff, 0x0f, 0x77, 0x74, 0xc7, 0x27, 0xfc, 0xbd, 0x50, 0x17, 0xde, 0x0f, 0x61, 0x0c, 0x0f, 0x37, 0x74, 0x92, 0x97, 0xf9, 0xbd, 0x4c, 0xc3, 0xde, 0xcd, 0x2c, 0x49, 0x0e, 0x87, 0x74, 0x38, 0xb7, 0xfb, 0x3d, 0x5e, 0x0a, 0xdc, 0xc1, 0x00, 0xe8, 0x0e, 0xf7, 0x74, 0x38, 0x97, 0xfb, 0xbd, 0xcc, 0xc8, 0x9f, 0xc3, 0xac, 0xef, 0x0e, 0xf7, 0x64, 0x92, 0xa7, 0xeb, 0x8d, 0xde, 0x4c, 0x3e, 0xd3, 0x2c, 0xe9, 0x0a, 0xf7, 0x09, 0x86, 0xb7, 0xeb, 0xe1, 0xde, 0x1c, 0x7e, 0xd8, 0x61, 0xec, 0x02, 0xff, 0xff, 0x93, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0f, 0xff, 0xff, 0xc7, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x0f };
+bool restartRequired = false;  // Set this flag in the callbacks to restart ESP in the main loop
+
+bool turnOff = false;
+bool fwUpdate = false;   //------ indicates the status of Firmware Update ( true = updating : false = not updating)
+String StnStatus;
+String argTot ; //-------- Static variable for stable timer variable
+
+WiFiUDP ntpUDP;
+NTPClient timeClient(ntpUDP, "pool.ntp.org");
+AsyncWebServer eviotsvr(80);
+
+#if !( USING_ESP32_S2 || USING_ESP32_C3 )
+DNSServer dns;
+#endif
+CRGB leds[NUM_LEDS];
+
+String abc[] = {WiFi.localIP().toString(),
+                "** EV Charger **",
+                "** EV Charger **",
+                "** EV Charger **",
+               };
+
+String uptime() {
+  int sec = millis() / 1000;
+  int min = sec / 60;
+  int hr = min / 60;
+  char uptimeTemp [60];
+  sprintf(uptimeTemp, "%02d:%02d:%02d", hr, min % 60, sec % 60);
+  //upTime = (String) hr + ":" + String (min %60) +":" + String (sec %60);
+  String upTime;
+  upTime = uptimeTemp;
+  return upTime;
+}
+
+void HostMacAdd() {
+  //  String Hostname;
+  Hostname = WiFi.macAddress();     // getting MAC address from esp and setting only last 4 char as hostname
+  Hostname.remove(0, 9);
+  Hostname.remove(2, 1);
+  Hostname.remove(4, 1);
+  //   Serial.print("MAC: ");
+  //   Serial.println(WiFi.macAddress());
+  Hostname = "Evt-" + Hostname;
+  //   return Hostname;
+}
+
+//-------------Get calibrated value for ADC from FS-------------
+#define ACVal   parseConfig[0]
+#define ACAdc   parseConfig[1]
+#define DCVal   parseConfig[2]
+#define DCAdc   parseConfig[3]
+#define TempVal parseConfig[4]
+#define TempAdc parseConfig[5]
+
+float parseConfig[6];
+void getADC () {
+  String ADC_confi = readFile(LITTLEFS, "/ADC_config.csv");
+  //Serial.println(ADC_confi);
+   char str[80];
+   ADC_confi.toCharArray(str, 50);
+   const char* s = ",";
+   char *token;
+   byte index = 0;
+//   float parseConfig[7];
+   /* get the first token */
+   token = strtok(str, s);
+   /* walk through other tokens */
+   while( token != NULL ) {
+       parseConfig[index] = atof (token);   
+       Serial.println(parseConfig[index]);
+       index++;
+       //printf( " %s\n", token );
+       token = strtok(NULL, s);
+   }
+}
+
+
+void setup() {
+  delay(200);
+  Serial.begin(115200); while (!Serial); delay(500);
+  ++bootCount;
+  Serial.println("Boot number: " + String(bootCount));
+  initFS();
+  getADC();
+  //  testFS();    //saving DC voltage on FS
+  ////Checking if power (voltage) is available; if not chip switches to deep sleep mode...
+  //  print_wakeup_reason();   // calling reason func...
+  //  Serial.println(analogRead(ACAnalog_channel_pin));
+  //  while (analogRead(ACAnalog_channel_pin) <= 250) deepSleep();  // program wont be runnning beyond this if the conditon is true..
+
+  //  WiFi.mode(WIFI_STA); // explicitly set mode, esp defaults to STA+AP
+  pinMode(TRIGGER_PIN, INPUT);
+  pinMode(BuzzerPin, OUTPUT);
+  FastLED.addLeds<NEOPIXEL, LED_PIN>(leds, NUM_LEDS);
+  FastLED.setBrightness(150);
+  leds[0] = CRGB::Orange;
+  FastLED.show();  // need to call this everytime for leds to work
+  Serial.setDebugOutput(true);
+  delay(2000);
+  HostMacAdd(); //-------custom HostName
+  Serial.println("\n Starting");
+  Serial.println("\nStarting Async_AutoConnect_ESP32");
+  AsyncWiFiManager wifiManager(&eviotsvr, &dns);
+  wifiManager.setCustomHeadElement("<style>html{filter: invert(1) hue-rotate(180deg);}</style>");   // setting wifimanager page to dark theme
+  digitalWrite(BuzzerPin, HIGH);
+  delay(1000);
+  digitalWrite(BuzzerPin, LOW);
+  wifiManager.setConfigPortalTimeout(120);
+  bool res;
+  res = wifiManager.autoConnect(("AP " + Hostname).c_str());
+  //res = wifimanager.autoConnect("AutoConnectAP","password"); // password protected ap
+  //  wifiManager.autoConnect(("AP " + Hostname).c_str());
+
+  if (!res) {
+    Serial.println("Failed to connect or hit timeout");
+    ESP.restart();
+  }
+  else {
+    //if you get here you have connected to the WiFi
+    delay(500);
+    Serial.println("connected..!! :)");
+    WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, INADDR_NONE);
+    WiFi.setHostname(Hostname.c_str());      //define hostname
+  }
+
+  //  WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, INADDR_NONE);
+  //  WiFi.setHostname(Hostname.c_str());      //define hostname
+  while ( WiFi.status() != WL_CONNECTED ) {
+    delay (500 );
+  }
+  String IPAddr = WiFi.localIP().toString();
+  digitalWrite(BuzzerPin, HIGH);
+  delay(1000);
+  digitalWrite(BuzzerPin, LOW);
+  timeClient.begin();
+  timeClient.setTimeOffset(19800);  //IST is UTC+5:30 Hrs
+  //  Serial.println(WiFi.localIP());
+
+
+  //direct url "/update" to update firmware and filesystem; to make change check AsyncElegantOTA.h file in libraries...
+  AsyncElegantOTA.setID(Hostname.c_str());  //displaying Device Id
+  AsyncElegantOTA.begin(&eviotsvr);    // Start OTA Update
+
+  eviotsvr.onNotFound([](AsyncWebServerRequest * request) {
+    Serial.printf("NOT_FOUND: ");
+    if (request->method() == HTTP_GET)
+      Serial.printf("GET");
+    else if (request->method() == HTTP_POST)
+      Serial.printf("POST");
+    else if (request->method() == HTTP_DELETE)
+      Serial.printf("DELETE");
+    else if (request->method() == HTTP_PUT)
+      Serial.printf("PUT");
+    else if (request->method() == HTTP_PATCH)
+      Serial.printf("PATCH");
+    else if (request->method() == HTTP_HEAD)
+      Serial.printf("HEAD");
+    else if (request->method() == HTTP_OPTIONS)
+      Serial.printf("OPTIONS");
+    else
+      Serial.printf("UNKNOWN");
+    Serial.printf(" http://%s%s\n", request->host().c_str(), request->url().c_str());
+
+    if (request->contentLength()) {
+      Serial.printf("_CONTENT_TYPE: %s\n", request->contentType().c_str());
+      Serial.printf("_CONTENT_LENGTH: %u\n", request->contentLength());
+    }
+
+    int headers = request->headers();
+    int i;
+    for (i = 0; i < headers; i++) {
+      AsyncWebHeader* h = request->getHeader(i);
+      Serial.printf("_HEADER[%s]: %s\n", h->name().c_str(), h->value().c_str());
+    }
+
+    int params = request->params();
+    for (i = 0; i < params; i++) {
+      AsyncWebParameter* p = request->getParam(i);
+      if (p->isFile()) {
+        Serial.printf("_FILE[%s]: %s, size: %u\n", p->name().c_str(), p->value().c_str(), p->size());
+      } else if (p->isPost()) {
+        Serial.printf("_POST[%s]: %s\n", p->name().c_str(), p->value().c_str());
+      } else {
+        Serial.printf("_GET[%s]: %s\n", p->name().c_str(), p->value().c_str());
+      }
+    }
+
+    request->send(404);
+  });
+
+  xTaskCreatePinnedToCore(
+    getAmps,   /* Function to implement the task */
+    "GetAmps", /* Name of the task */
+    10000,      /* Stack size in words */
+    NULL,       /* Task input parameter */
+    1,          /* Priority of the task */
+    NULL,       /* Task handle. */
+    taskCore);  /* Core where the task should run */
+
+  Serial.println("Task created...");
+
+  eviotsvr.on("/", handleRoot);
+  eviotsvr.on("/InitChrg", InitChrg);
+  eviotsvr.on("/info", HTTP_GET, [](AsyncWebServerRequest * request) { // doing this because, since we are calling "infoJson()" in other funcyions,
+    request->send_P(200, "text/json", infoJson().c_str());                    //So that we cant call request method locally on infoJson fucntion itself.
+  });
+  eviotsvr.on("/analog", HTTP_GET, [](AsyncWebServerRequest * request) { // doing this because, since we are calling "infoJson()" in other funcyions,
+    String analog = "AC analog:  " + String(analogRead(34)) + '\n' + "DC analog:  " + String(analogRead(35)) + '\n' + "TEMP analog:  " + String(analogRead(39)) + '\n' + "AMPS analog:  " + String(analogRead(36));
+    request->send_P(200, "text/plain", analog.c_str());                    //So that we cant call request method locally on infoJson fucntion itself.
+  });
+
+  eviotsvr.on("/DCV", HTTP_GET, [](AsyncWebServerRequest * request) {
+    request->send(LITTLEFS, "/readings.txt", "text/plain");
+  });
+
+  eviotsvr.on("/clean", HTTP_GET, [](AsyncWebServerRequest * request) {
+    Serial.println("\n \nClearing all Logs in memory\n \n ");
+    // request->send(200, "text/plain", "Clearing saved logs...");
+    //clear = true;   //--- changing the bool state to initialize memory clearing
+    writeFile(LITTLEFS, "/readings.txt", "DC Voltage value: \n");
+    //request->redirect("/");
+    request->send(200, "text/html", "<html><head><meta http-equiv = 'refresh' content = '3; url = /DCV' /></head><body><h2>Clearing all Logs in memory....</h2></body></html>");
+    //
+  });
+
+  eviotsvr.on("/espInfo", handleEspInfo);
+  eviotsvr.begin();
+
+  pinMode(RelayPin, OUTPUT);
+  digitalWrite(RelayPin, LOW);
+  Serial.println("");
+  Serial.println("Server Ready");
+  delay(100);
+} //setup()
+
+void handleRoot(AsyncWebServerRequest *request) {
+
+  String message = "<h1 style='text-align:center'>EVTRON Charging Terminal</h1>";
+  message += "<h2 style='text-align:center'>Station ID: " + Hostname + "</h2>";
+  message += "<p style='text-align:center'>Local IP: " + WiFi.localIP().toString() + "</p>";
+  message += "<p style='text-align:center'>" + CurDtTm() + "</p>";
+  message += "<p style='text-align:center'>Uptime: " + uptime() + "</p>";
+  bool inp = digitalRead(RelayPin);
+  message += "<p style='text-align:center'>Relay Status: " + String(inp) + "</p>";
+  //  String StnStatus;
+  if (digitalRead(RelayPin) == LOW) {
+    StnStatus = "Idle";
+    message += "<p style='text-align:center'>Station Status: " + StnStatus + "</p>";
+    message += "<p style='text-align:center'>Amps: " + String(Amps_TRMS) + "</p>";
+    message += "<p style='text-align:center'>AC Voltage: " + String(ACVoltage_value) + "</p>";
+    message += "<p style='text-align:center'>DC Voltage: " + String(DCVoltage_value) + "</p>";
+    message += "<p style='text-align:center'>Temperature: " + String(temp) + "</p>";
+    message += "<p style='text-align:right'>Last kWh reading: " + String(lastKwh, 3) + "</p><br>";
+
+    message += "<label for='mins'>Enter Time in Minutes: </label>";
+    message += "<input type='number' id='mins1' name='mins1' step='60' min='0' max='600' size='4' maxlength='3' value='0'>";
+    message += "<br> <br>";
+    //    message += "<h3 <button style=\"background-color:green; border-color:blue; color:white; height:25px; display: inline-flex; align-items: center;\" \
+    //                  type=\"button\" onclick=\"clickfunc()\"> * Start * </button></h3><br>";
+
+    message += "<label for='kwh'>Enter in kwh: </label>";
+    message += "<input type='number' id='kwh1' name='kwh1' step='1' min='0' max='100' size='4' maxlength='3' value='0'>";
+    message += "<br> ";
+    message += "<h3 <button style=\"background-color:green; border-color:blue; color:white; height:25px; display: inline-flex; align-items: center;\" \
+                  type=\"button\" onclick=\"clickfunc()\"> * Start * </button></h3><br>";
+    //    message += "<h4 <button style=\"background-color:blue; border-color:blue; color:white; height:25px; display: inline-flex; align-items: center;\" \
+    //                  type=\"button\" onclick=\"clickfunc()\"> * Start * </button></h4><br>";
+
+    message += "<script> async function clickfunc() \
+                { let inputval = document.getElementById(\"mins1\").value; let inputval2 = document.getElementById(\"kwh1\").value; const Http = new XMLHttpRequest(); \
+                const url = \"http://" + WiFi.localIP().toString() + "/InitChrg?Status=ON&Timer=\"+inputval+\"&kwh=\"+inputval2; \
+                Http.open(\"GET\", url); Http.send(); await new Promise(r => setTimeout(r, 1000)); window.location.reload();}</script> ";
+
+    //    message += " async function clickfunc() {if(document.getElementById(\"kwh1\") != null) \
+    //                { let inputval = document.getElementById(\"kwh1\").value; const Http = new XMLHttpRequest(); \
+    //                const url = \"http://" + WiFi.localIP().toString() + "/InitChrg?Status=ON&Timer=null&kwh=\"+inputval1; \
+    //                Http.open(\"GET\", url); Http.send(); await new Promise(r => setTimeout(r, 1000)); window.location.reload();} } </script>";
+
+    //    message += "<script> async function clickfunc() {if(document.getElementById(\"mins1\") != null) \
+    //                { let inputval = document.getElementById(\"mins1\").value; const Http = new XMLHttpRequest(); \
+    //                const url = \"http://" + WiFi.localIP().toString() + "/InitChrg?Status=ON&Timer=\"+inputval+\"&kwh=null\"; \
+    //                Http.open(\"GET\", url); Http.send(); await new Promise(r => setTimeout(r, 1000)); window.location.reload();} \
+    //                else if(document.getElementById(\"kwh1\") != null) \
+    //                { let inputval1 = document.getElementById(\"kwh1\").value; const Http = new XMLHttpRequest(); \
+    //                const url1 = \"http://" + WiFi.localIP().toString() + "/InitChrg?Status=ON&Timer=null&kwh=\"+inputval1; \
+    //                Http.open(\"GET\", url1); Http.send(); await new Promise(r => setTimeout(r, 1000)); window.location.reload();} } </script>";
+
+
+  } else {
+    StnStatus = "Charging";
+    unsigned long StnStat = ((unsigned long) RemTime / 1000UL);
+    message += "<p style='text-align:center'>Station Status: " + StnStatus + "</p>";
+    if (intervalKwh > 0.000 ) {
+      message += "<p style='text-align:center'>Elapsed Time: " + (String) StnStat + "</p>";
+    } else {
+      message += "<p style='text-align:center'>Elapsed Time: " + (String) StnStat + " / " + (String) (interval / 1000) + "</p>";
+    }
+    //    message += "<p style='text-align:center'>Elapsed Time: " + (String) StnStat +" / " + (String) (interval/1000) + "</p>";
+    Serial.println((unsigned long) RemTime / 1000UL );
+    Serial.println((unsigned long) interval / 1000UL);
+    //    Serial.print("Amps : ");
+    //    Serial.println(Amp);
+    message += "<p style='text-align:center'>Amps: " + String(Amps_TRMS) + "</p>";
+    message += "<p style='text-align:center'>AC Voltage: " + String(ACVoltage_value) + "</p>";
+    message += "<p style='text-align:center'>DC Voltage: " + String(DCVoltage_value) + "</p>";
+    message += "<p style='text-align:center'>Temperature: " + String(temp) + "</p>";
+    watts = (Amps_TRMS * ACVoltage_value);
+    message += "<p style='text-align:center'>Watts: " + String(watts) + "</p>";
+    if (intervalKwh > 0.000 ) {
+      message += "<p style='text-align:center'>Kilo Watts-hr: " + String(kwh, 3) + " / " + String(intervalKwh, 3) + "</p><br>";
+    } else {
+      message += "<p style='text-align:center'>Kilo Watts-hr: " + String(kwh, 3) + "</p><br>";
+    }
+
+    //    message += "<label for='mins'>Enter Time in Minutes: </label>";
+    //    message += "<input type='number' id='mins1' name='mins1' step='60' min='60' max='600' size='4' maxlength='3' value='60' disabled='disabled'>";                                                                                                                    //document.getElementById(\"mins\").value //   onclick="getElementById('demo').innerHTML=Date()"
+    //    message += " ";
+    message += "<h3 <button style=\"background-color:Red; border-color:blue; color:white; height:25px; display: inline-flex; align-items: center;\" \
+                type=\"button\" onclick=\"clickfunc()\"> * Stop * </button></h3>";
+    message += "<script> async function clickfunc() {const Http = new XMLHttpRequest(); \
+                const url = \"http://" + WiFi.localIP().toString() + "/InitChrg?Status=OFF\"; \
+                Http.open(\"GET\", url); Http.send(); await new Promise(r => setTimeout(r, 1000)); window.location.reload(); } </script>";
+  }
+  request->send(200, "text/html", message);
+} //handleroot()
+
+void StartChrg(int TotTimer) {
+
+  Serial.print("Inside StartChrg Func - ");
+  Serial.println(TotTimer);
+  interval = (1000UL * 60 * TotTimer);
+  if (TotTimer <= 0 )
+    argTot = "null";
+  else {
+    argTot = TotTimer;
+  }
+  digitalWrite(RelayPin, HIGH);
+  Serial.println("Relay ON");
+
+} //StartChrg
+
+void StartKwhTimer(float kwhTimer) {
+  Serial.print("Inside KwhTimer Func - ");
+  Serial.println(kwhTimer);
+  intervalKwh = kwhTimer;
+  digitalWrite(RelayPin, HIGH);
+  //  leds[0] = CRGB::Green;
+  //  FastLED.show();
+  Serial.println("KWHHHHHHH Relay ON");
+
+}
+
+void InitChrg(AsyncWebServerRequest *request) {
+  //  eviotsvr.on("/InitChrg", HTTP_GET, [] (AsyncWebServerRequest *request) {
+  String message = "Number of args received:";
+  message += request->args();
+  message += "\n";   //Add a new line
+  int args = request->args();
+  for (int i = 0; i < args; i++) {
+    Serial.printf("ARG[%s]: %s\n", request->argName(i).c_str(), request->arg(i).c_str());
+  }
+  for (int i = 0; i < args; i++) {
+    message += request->argName(i) + ": ";
+    message += request->arg(i) + "\n";
+    if (request->argName(i) == "Status") {
+      if (request->arg(i) == "ON") {
+        Serial.println("i'm here1-Status");
+        Serial.println("i'm here1-on");
+        int TotTimer = request->arg(1).toInt();
+        Serial.print("Timer Value: ");
+        Serial.println(TotTimer);
+        StartChrg(TotTimer);
+        float kwhTimer = request->arg(2).toFloat();
+        Serial.print("KWH Timer Value: ");
+        Serial.println(kwhTimer);
+        StartKwhTimer(kwhTimer);
+        turnOff = false;
+      }
+      else {
+        if (request->arg(i) == "OFF") {
+          Serial.println("i'm here1-off");
+          digitalWrite(RelayPin, LOW);
+          //          previousMillis = millis();
+          turnOff = true;
+          Serial.println("Relay OFF");
+          break;
+        }
+      }
+    }
+    if (request->argName(i) == "reset") {
+      if (request->arg(i) == "esp") {
+        request->send(200, "text/plain", "RESETTING DEVICE.....");
+        delay(3000);
+        ESP.restart();
+      } else if (request->arg(i) == "wifi") {
+        request->send(200, "text/plain", "RESETTING WIFI.....\n RECONNECT USING WIFI MANAGER ON HOSTNAME.....\n");
+        delay(500);
+        AsyncWiFiManager wifiManager(&eviotsvr, &dns);
+        wifiManager.resetSettings();   //reset saved settings;
+        Serial.println("INTO WIFI RESET MODE");
+        delay(5000);
+        ESP.restart();
+      }
+    }
+    //        else {
+    //        Serial.println("Wrong Input");
+    //        message = "Wrong Input \n\n";
+    //        break;
+    //       }
+  }
+  String CurDtTime = CurDtTm();
+  message += CurDtTime + "\n";
+  request->send(200, "text/plain", message);
+  Serial.println(message);
+  return;
+} //InitChrg()
+
+String CurDtTm() {
+  char Timebuffer[40];
+  timeClient.update();
+  unsigned long epochTime = timeClient.getEpochTime();
+  struct tm *ptm = gmtime ((time_t *)&epochTime);
+  int currentYear = ptm->tm_year + 1900;
+  int currentMonth = ptm->tm_mon + 1;
+  int monthDay = ptm->tm_mday;
+  sprintf(Timebuffer, "%02d-%02d-%4dT%s", monthDay, currentMonth, currentYear, timeClient.getFormattedTime().c_str());
+  return Timebuffer;
+} //CurDtTm
+
+//unsigned long printPeriod = 1000; // in milliseconds
+//// Track time in milliseconds since last reading
+//unsigned long CSpreviousMillis = 0;
+
+void getAmps(void * pvParameters ) {
+Serial.println("Inside line 526");
+  RunningStatistics CSinputStats;                 // create statistics to look at the raw test signal
+  CSinputStats.setWindowSecs( windowLength );     //Set the window length
+
+  while ( true ) {
+    Serial.println("Inside line 531");
+    ACS_Value = analogRead(ACS_Pin);  // read the analog in value:
+    CSinputStats.input(ACS_Value);  // log to Stats function
+
+    //    if ((unsigned long)(millis() - CSpreviousMillis) >= printPeriod) {
+    //      CSpreviousMillis = millis();   // update time every second
+
+    if (AsyncElegantOTA.getSta() == true ) {   //LED turns Pink if UPDATE has been started..
+      basicfadein(224);
+      Serial.println("Updating...");
+    } else {
+Serial.println("Inside line 542");
+      Amps_TRMS = (CSintercept + CSslope) * CSinputStats.sigma();
+      //      Serial.print("Amps_Value = ");
+      //      Serial.print(ACS_Value);
+      //      Serial.print(" | Amps        = ");
+      //      Serial.print(Amps_TRMS);
+      //      Serial.println(" A");
+
+      AC_value = analogRead(ACAnalog_channel_pin);
+      //      Serial.print("AC_value   = ");
+      //      Serial.print(AC_value);
+      Serial.println("Inside line 553");
+      ACVoltage_value = (AC_value * ACVal ) / (ACAdc);   // ACVoltage_value = (AC_value * 228 ) / (968);
+      //      Serial.print(" | AC Voltage  = ");
+      //      Serial.print (int(round(ACVoltage_value)));
+      //      Serial.println(" volts ");
+
+      //      DC_Value = analogRead(DCAnalog_channel_pin);
+      ////      Serial.print("DC_Value   = ");
+      ////      Serial.print(DC_Value);
+      //      DCVoltage_value = (DC_Value * 5.3 ) / (1330);
+      ////      Serial.print(" | DC Voltage  = ");
+      ////      Serial.print(DCVoltage_value);
+      ////      Serial.println(" volts");
+      //
+      //      Temp_Value = analogRead(TempAnalog_channel_pin);
+      ////      Serial.print("Temp_Value = ");
+      ////      Serial.print(Temp_Value);
+      //      temp = (Temp_Value * 50 ) / (1300);
+      ////      Serial.print(" | Temp        = ");
+      ////      Serial.print(int(round(temp)));
+      ////      Serial.println(" °C ");
+      ////
+      ////      Serial.print( "\n" );
+      Serial.println("Inside line 576");
+    }
+  }
+} //getAmps
+
+//------------watts calc--------//
+void getkWh()  {
+Serial.println("Iniside getKwh");
+  static unsigned int sum;
+  float kwm;
+
+  static uint32_t prevMillis = millis();
+  //  watts = (Amp.toFloat() * 230);
+  if ( millis() - prevMillis >= 1000 ) {  // read it every one sec
+
+    prevMillis = millis();
+    if (digitalRead(RelayPin) == HIGH)
+    {
+      sum += (ACVoltage_value * Amps_TRMS) ;  // watts in 1sec
+    } else {
+      sum = 0;
+    }
+    //    Serial.print("SUM");
+    //    Serial.println(sum);
+    kwm = sum / 60000 ;  // watts in 1min
+    //    kwm = sum / 1000 ;  // watts in 1min
+    //    Serial.print("kwM");
+    //    Serial.println(kwm);
+    kwh = kwm / 60 ;  // watts in 1hr
+    //  kwh = (sum / 60000) / 60;
+    //    Serial.print("kwH");
+    //    Serial.println(kwh, 2);
+  }
+  if (kwh > 0.000) {
+    lastKwh = kwh;
+  }
+  //  return kwh;
+Serial.println("Ending getkwh");
+}
+//----------//
+
+void testMsre() {
+Serial.println("Iniside TestMsre");
+  DC_Value = analogRead(DCAnalog_channel_pin);
+  //      Serial.print("DC_Value   = ");
+  //      Serial.print(DC_Value);
+  DCVoltage_value = (DC_Value * DCVal ) / (DCAdc);   //(DC_Value * 5.3 ) / (1220);
+  //      Serial.print(" | DC Voltage  = ");
+  //      Serial.print(DCVoltage_value);
+  //      Serial.println(" volts");
+
+  Temp_Value = analogRead(TempAnalog_channel_pin);
+  //      Serial.print("Temp_Value = ");
+  //      Serial.print(Temp_Value);
+  temp = (Temp_Value * TempVal ) / (TempAdc);  //(Temp_Value * 50 ) / (130);
+  //      Serial.print(" | Temp        = ");
+  //      Serial.print(int(round(temp)));
+  //      Serial.println(" °C ");
+  //
+  //      Serial.print( "\n" );
+Serial.println("Ending TestMsre");
+}
+
+String infoJson() {
+Serial.println("Inside line 640");
+  bool inp = digitalRead(RelayPin);
+  //  Serial.print("BOOOOL:  "); Serial.println(inp);
+  StnStatus = (inp == 1) ? "Charging" : "Idle";
+  String elspTime = (inp == 1) ? (String) (RemTime / 1000) + " / " + (String) (interval / 1000) : "Null";
+  watts = (Amps_TRMS * ACVoltage_value);
+  const String QUOTE = "\"";   // used to escape literal string
+  String info;
+  info = "{\n"  ;
+
+  info += QUOTE + "Station ID" + QUOTE + ": " + QUOTE + Hostname + QUOTE + "," + '\n';
+  info += QUOTE + "Local IP" + QUOTE + ": " + QUOTE + WiFi.localIP().toString() + QUOTE + "," + '\n';
+  info += QUOTE + "Date & Time" + QUOTE + ": " + QUOTE + CurDtTm() + QUOTE + "," + '\n';
+  info += QUOTE + "Uptime" + QUOTE + ": " + QUOTE + uptime() + QUOTE + "," + '\n';
+  info += QUOTE + "Relay Status" + QUOTE + ": " + QUOTE + (String)inp + QUOTE + "," + '\n';
+  info += QUOTE + "Station Status" + QUOTE + ": " + QUOTE + StnStatus + QUOTE + "," + '\n';
+  info += QUOTE + "Elapsed Time" + QUOTE + ": " + QUOTE + elspTime + QUOTE + "," + '\n';
+  info += QUOTE + "Amps" + QUOTE + ": " + QUOTE + (String)Amps_TRMS + QUOTE + "," + '\n';
+  info += QUOTE + "AC Voltage" + QUOTE + ": " + QUOTE + (String)ACVoltage_value + QUOTE + "," + '\n';
+  info += QUOTE + "DC Voltage" + QUOTE + ": " + QUOTE + (String)DCVoltage_value + QUOTE + "," + '\n';
+  info += QUOTE + "Temperature" + QUOTE + ": " + QUOTE + (String)temp + QUOTE + "," + '\n';
+  info += QUOTE + "Wattage" + QUOTE + ": " + QUOTE + watts + QUOTE + "," + '\n';
+  info += QUOTE + "Free Heap" + QUOTE + ": " + QUOTE + (String) ESP.getFreeHeap() + QUOTE + "," + '\n';
+  info += QUOTE + "Last KWH" + QUOTE + ": " + QUOTE + String(lastKwh, 4) + QUOTE + '\n';
+
+  info += "}"  ;
+  //  request->send(200, "text/json", info);
+  Serial.println("Inside line 667");
+  return info;
+}
+//-------------------InfoJson----------------
+
+//-------------------sendServer----------------
+
+unsigned long previousMillis69 = 0;  // timer for server sending json
+const long interval69 = 60000;   // 1-min
+
+void SendServer() {
+Serial.println("Inside SendServer");
+  unsigned long currentMillis69 = millis(); // grab current time
+  bool errorSvr = false;
+  if (currentMillis69 - previousMillis69 >= interval69) {
+    if (WiFi.status() == WL_CONNECTED) {
+
+      HTTPClient http;
+
+      http.begin("http://172.16.50.137/SaniTun/MyTest/evcharger.php");
+      http.addHeader("Content-Type", "application/json");
+
+      int httpResponseCode = http.PUT(infoJson());
+
+      if (httpResponseCode > 0) {
+        String response = http.getString();
+        Serial.println(httpResponseCode);
+        Serial.println(response);
+
+      } else {
+        Serial.print("Error on sending PUT Request: ");
+        errorSvr = true;
+        Serial.println(httpResponseCode);
+      }
+
+      http.end();
+
+    } else {
+      Serial.println("Error in WiFi connection");
+    }
+    previousMillis69 = currentMillis69;
+  }
+  while (errorSvr == true) {
+    //  int16_t j;
+    for (uint16_t j = 0; j < 255; j++) {    // j = blink
+      leds[0] = CRGB(j, 0, j);
+      FastLED.show();
+    }
+    if (errorSvr == false) break;
+  }
+Serial.println("Ending SendServer");
+}
+
+//-------------------sendServer----------------
+void handleEspInfo(AsyncWebServerRequest *request) {
+
+  String espInfo;
+  espInfo += "Reset Info: CPU 0: " + verbose_print_reset_reason(rtc_get_reset_reason(0)) + " :: CPU 1: " + verbose_print_reset_reason(rtc_get_reset_reason(1)) + '\n';
+  espInfo += "Station ID: " + Hostname + '\n';
+  espInfo += "Free Heap: " + (String) ESP.getFreeHeap() + " :: Total Heap: " + (String) ESP.getHeapSize() + '\n';
+  espInfo += "Total SPI Flash: " + (String) LITTLEFS.totalBytes() + " :: Used SPI Flash: " + (String) LITTLEFS.usedBytes() + '\n';
+  espInfo += "Free OTA Sketch Space: " + (String) ESP.getFreeSketchSpace() + '\n';
+
+  request->send(200, "text/plain", espInfo);
+}
+//-------------------EspInfo-------------------
+
+
+void NeoLed() {   //controls LED
+Serial.println("Inside NeoLed");
+  //  int i = 0;
+  FastLED.show();
+  if ( WiFi.status() == WL_CONNECTED && AsyncElegantOTA.getSta() == false) {
+    //    if (AsyncElegantOTA.getSta() == true ) {   //LED turns Pink if UPDATE has been started..
+    //      basicfadein(224);
+    //      Serial.println("Updating.....");
+    //    } else
+    if (digitalRead(RelayPin) == LOW) {
+      leds[0] = CRGB::Red;   //RED
+
+    } else if (digitalRead(RelayPin) == HIGH) {
+      if (Amps_TRMS >= 2) {
+        basicfadein(160);  //  pure blue
+      } else {
+        leds[0] = CRGB::Green; //GREEN
+      }
+    }
+  }
+Serial.println("Ending NeoLed");
+}//NeoPixel
+
+void basicfadein(int colr) {     //fades the LED, pass the respective HUE value to change the color
+Serial.println("Inside basicFade");
+  random16_set_seed(100);                           // 535//The randomizer needs to be re-set each time through the loop in order for the 'random' numbers to be the same each time through.
+  uint8_t fader = sin8(millis() / random8(10, 20)); // The random number for each 'i' will be the same every time.
+  if (fader < 10) {
+    fader = fader + 10;
+  }
+  //    uint8_t colr = rand()+millis()/100;           // Make a random colour.
+  leds[0] = CHSV(colr, 255, fader);               // Now, let's assign to CHSV values and rotate the colour.
+  FastLED.show();
+  Serial.println("Ending basicFade");
+} // basicfadein()
+
+//----------------------loop-----------------
+
+// unsigned long prevSleep = 0;
+int stopLoop = 0;
+int forStop = 0;
+int sleepStop = 0;
+//AsyncWebServerRequest *request;
+void loop() {
+  //  eviotsvr.handleClient();
+  //  MDNS.update();
+  //  getAmps();
+  Serial.print("HEAP: "); Serial.println(ESP.getFreeHeap());
+  //  if(analogRead(ACAnalog_channel_pin) <= 250) {      //Switching to
+  //    Serial.println ("Restarting and switching to Deep Sleep Mode");
+  //    ESP.restart();
+  //  }
+  Serial.println("Inside line 783");
+  AsyncElegantOTA.loop();
+
+  testMsre();
+  getkWh();
+  SendServer();
+  NeoLed();
+
+  //fwUpdate = (AsyncElegantOTA.getSta() == true) ? true : false;
+  //  Serial.println(
+Serial.println("Inside line 793");
+  unsigned long currentMillis = millis(); // grab current time
+  // check if "interval" time has passed (1000 milliseconds)
+  //if (digitalRead(RelayPin) == HIGH) {
+  RemTime = ((unsigned long) (currentMillis - previousMillis));
+  //}//else {
+  //  RemTime = 0;
+  // }
+
+  //  if (request->arg(1).toInt() > 0) {
+  //    argTot = request->arg(1);
+  //  } else if (request->arg(1) == "null") {
+  //    argTot = request->arg(1);
+  //  }
+  //      Serial.println((unsigned long) RemTime / 1000UL );       ///* look for  RemTime by printing on node mcu chip*
+  //      Serial.print(" REMTime:  "); Serial.print(RemTime); Serial.print("\t");
+  //      Serial.print(" previous:  "); Serial.print(previousMillis);Serial.print("\t");
+  //      Serial.print(" current "); Serial.print(currentMillis);Serial.println("\t");
+  //      Serial.print("Interval");Serial.println(interval);
+  //      Serial.print("KWH:Interval");Serial.println(intervalKwh);
+  //    Serial.println(previousMillis);
+  //String heyyo = reqcheck();
+  Serial.println("Inside line 815");
+  if ((unsigned long)(currentMillis - previousMillis) >= interval && intervalKwh == 0.0000) {
+    digitalWrite(RelayPin, LOW);
+    //    leds[0] = CRGB::Red;
+    //    FastLED.show();
+    //        Serial.println("INSIDE TIMER MILLIS Relay OFF \n");
+    previousMillis = currentMillis;
+    interval = 0;
+  }
+  else if (argTot == "null" && intervalKwh <= kwh) {
+
+    digitalWrite(RelayPin, LOW);
+    //    leds[0] = CRGB::Red;
+    //    FastLED.show();
+    Serial.println("KWWWWWHH  Relay OFF");
+    previousMillis = millis();
+  } else if (turnOff == true) {
+    //    Serial.println("Para Relay OFF");
+    previousMillis = millis();
+  }
+Serial.println("Inside line 835");
+  if (forStop < 1) {
+    for (stopLoop = 0; stopLoop <= 2; stopLoop++) {
+      testFS();    //saving DC voltage on FS
+      //stopLoop++;
+
+      //Checking if power (voltage) is available; if not chip switches to deep sleep mode...
+      print_wakeup_reason();   // calling reason func...
+      Serial.println(analogRead(ACAnalog_channel_pin));
+      if (stopLoop == 2 ) break;
+    }
+    forStop++;
+  }
+Serial.println("Inside line 848");
+  if (analogRead(ACAnalog_channel_pin) <= 250) {
+    //Serial.println("No Power Found");
+    unsigned long currSleep;
+    if (sleepStop == 0) {
+      currSleep = millis();  //saving only one time
+      sleepStop = 1;
+    } else if (analogRead(ACAnalog_channel_pin) >= 252) sleepStop = 0;
+
+    //if (currSleep - prevSleep < 60000){Serial.println("Waiting");
+    if (millis() - currSleep >= 60000) {
+
+      if (analogRead(ACAnalog_channel_pin) <= 250) {
+        //        String DCV = CurDtTm() + " : " + String(DCVoltage_value) + " v\n";
+        String DCV = CurDtTm() + " : " + String(DCVoltage_value) + " v\t" + "Boot Count: " + String(bootCount) + "\n";
+        Serial.println(DCV);
+        appendFile(LITTLEFS, "/readings.txt", DCV );
+        //prevSleep = currSleep;
+        deepSleep();  // program wont be runnning beyond this if the conditon is true..
+      }
+    }
+  }
+
+} //loop()
+
+
+String verbose_print_reset_reason(RESET_REASON reason) {
+
+  String ESPResetReason;
+  switch ( reason)
+  {
+    case 1  : ESPResetReason = ("Power on reset"); break;
+    case 3  : ESPResetReason = ("Software reset digital core"); break;
+    case 4  : ESPResetReason = ("Legacy watch dog reset digital core"); break;
+    case 5  : ESPResetReason = ("Deep Sleep reset digital core"); break;
+    case 6  : ESPResetReason = ("Reset by SLC module, reset digital core"); break;
+    case 7  : ESPResetReason = ("Timer Group0 Watch dog reset digital core"); break;
+    case 8  : ESPResetReason = ("Timer Group1 Watch dog reset digital core"); break;
+    case 9  : ESPResetReason = ("RTC Watch dog Reset digital core"); break;
+    case 10 : ESPResetReason = ("Instrusion tested to reset CPU"); break;
+    case 11 : ESPResetReason = ("Time Group reset CPU"); break;
+    case 12 : ESPResetReason = ("Software reset CPU"); break;
+    case 13 : ESPResetReason = ("RTC Watch dog Reset CPU"); break;
+    case 14 : ESPResetReason = ("for APP CPU, reseted by PRO CPU"); break;
+    case 15 : ESPResetReason = ("Reset when the vdd voltage is not stable"); break;
+    case 16 : ESPResetReason = ("RTC Watch dog reset digital core and rtc module"); break;
+    default : ESPResetReason = ("NO_MEAN");
+  }
+  return ESPResetReason;
+}
+
+/*
+  Method to print the reason by which ESP32
+  has been awaken from sleep
+*/
+void print_wakeup_reason() {
+  esp_sleep_wakeup_cause_t wakeup_reason;
+
+  wakeup_reason = esp_sleep_get_wakeup_cause();
+
+  if (wakeup_reason == ESP_SLEEP_WAKEUP_TIMER) Serial.println("Wakeup caused by timer");
+  else Serial.printf("Wakeup was not caused by deep sleep: %d\n", wakeup_reason);
+
+}
+
+void deepSleep() {
+
+
+  //    We set our ESP32 to wake up every required seconds
+
+  esp_sleep_enable_timer_wakeup(TIME_TO_SLEEP * uS_TO_S_FACTOR);
+  Serial.println("Setup ESP32 to sleep for every " + String(TIME_TO_SLEEP) + " Seconds");
+
+  Serial.println("Going to sleep now");
+
+  digitalWrite(BuzzerPin, HIGH);
+  delay(500);
+  digitalWrite(BuzzerPin, HIGH);
+  FastLED.setBrightness(75);  // turning LED to cyan when going to sleep
+  leds[0] = CRGB::Cyan;
+  FastLED.show();  // need to call this everytime for leds to work
+
+  Serial.flush();
+  //delay(100);
+  esp_deep_sleep_start();   // deep sleep started
+  Serial.println("This will never be printed");
+}
+
+void appendFile(fs::FS &fs, const char * path, String message) {
+Serial.println("Inside AppendFile");
+  Serial.printf("Appending to file: %s\r\n", path);
+
+  File file = fs.open(path, FILE_APPEND);
+  if (!file) {
+    Serial.println("- failed to open file for appending");
+    return;
+  }
+  if (file.print(message)) {
+    Serial.println("- message appended");
+  } else {
+    Serial.println("- append failed");
+  }
+  file.close();
+  Serial.println("Ending AppendFile");
+}
+
+void writeFile(fs::FS &fs, const char * path, const char * message) {
+  Serial.printf("Writing file: %s\r\n", path);
+
+  File file = fs.open(path, FILE_WRITE);
+  if (!file) {
+    Serial.println("- failed to open file for writing");
+    return;
+  }
+  if (file.print(message)) {
+    Serial.println("- file written");
+  } else {
+    Serial.println("- write failed");
+  }
+  file.close();
+}
+
+
+String readFile(fs::FS &fs, const char * path){
+  Serial.printf("Reading file: %s\r\n", path);
+
+  File file = fs.open(path);
+  if(!file){
+    Serial.println("Failed to open file for reading");
+    return String();
+  }
+
+  String fileContent;
+  while(file.available()){
+    fileContent = file.readString();
+    break;     
+  }
+  file.close();
+  return fileContent;
+}
+
+
+void testFS() {
+    Serial.println("Inside testFS");
+  // if (!LITTLEFS.begin()) {
+  //   Serial.println("LITTLEFS Mount Failed");
+  //   return;
+  // }
+
+  //DC_Value = analogRead(DCAnalog_channel_pin);
+  //DCVoltage_value = (DC_Value * 5 ) / (1105);   //(DC_Value * 5.3 ) / (1220);
+  //  String DCV = CurDtTm() + " : " + String(DCVoltage_value) + " v\n";
+  String DCV = CurDtTm() + " : " + String(DCVoltage_value) + " v\t" + "Boot Count: " + String(bootCount) + "\n";
+  Serial.println(DCV);
+  if (stopLoop == 2) appendFile(LITTLEFS, "/readings.txt", DCV );
+  Serial.println("Appending on FS Done..!!");
+  //LITTLEFS.end();
+  Serial.println("Ending testFS");
+}
+
+
+void initFS() {    //initalizing FileSystem
+  if (!LITTLEFS.begin()) {
+    Serial.println("An error has occurred while mounting LittleFS");
+  }
+  else{
+    Serial.println("LittleFS mounted successfully");
+  }
+}
